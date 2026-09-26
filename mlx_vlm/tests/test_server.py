@@ -3820,7 +3820,7 @@ def test_stream_without_finish_token_flushes_held_text(client, api):
     assert text == "A <tool_call>unfinished"
 
 
-@pytest.mark.parametrize("api", ["chat", "responses"])
+@pytest.mark.parametrize("api", ["chat", "responses", "messages"])
 def test_tool_call_content_keeps_angle_bracket_text(client, api):
     result = _result(
         f"<think>r</think>Use <b>bold</b>.<|im_end|></think> {_WEATHER_CALL}"
@@ -3829,7 +3829,7 @@ def test_tool_call_content_keeps_angle_bracket_text(client, api):
     tool = (
         dict(type="function", name="get_weather", parameters={"type": "object"})
         if api == "responses"
-        else _tool()
+        else _tool(api=api)
     )
     with _endpoint(result=result, parser=_JSON_TOOLS):
         response = _post(client, api, tools=[tool])
@@ -3839,6 +3839,13 @@ def test_tool_call_content_keeps_angle_bracket_text(client, api):
         message = body["choices"][0]["message"]
         assert message["content"] == "Use <b>bold</b>."
         assert message["tool_calls"][0]["function"]["name"] == "get_weather"
+    elif api == "messages":
+        assert [b["text"] for b in body["content"] if b["type"] == "text"] == [
+            "Use <b>bold</b>."
+        ]
+        assert [b["name"] for b in body["content"] if b["type"] == "tool_use"] == [
+            "get_weather"
+        ]
     else:
         texts = [
             part["text"]
@@ -3849,6 +3856,61 @@ def test_tool_call_content_keeps_angle_bracket_text(client, api):
         assert (
             "Use <b>bold</b>." in texts or body.get("output_text") == "Use <b>bold</b>."
         )
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("finish_reason", [None, "length"])
+@pytest.mark.parametrize("completed_call", [False, True])
+def test_anthropic_unfinished_call_matches_stream(
+    client, fallback, finish_reason, completed_call
+):
+    chunks = [
+        _WEATHER_CALL if completed_call else "",
+        " Use <b>bold</b>. <tool_call>",
+        "unfinished  ",
+    ]
+    expected = (
+        "Use <b>bold</b>. unfinished"
+        if completed_call
+        else "Use <b>bold</b>. <tool_call>unfinished"
+    )
+    text = "".join(chunks)
+
+    def endpoint_options():
+        if fallback:
+            return dict(
+                result=_result(text, finish_reason=finish_reason),
+                chunks=[
+                    _result(c, finish_reason=finish_reason if i == 2 else None)
+                    for i, c in enumerate(chunks)
+                ],
+            )
+        return dict(
+            generator=_streaming(
+                [
+                    _token(c, finish_reason=finish_reason if i == 2 else None)
+                    for i, c in enumerate(chunks)
+                ]
+            )
+        )
+
+    with _endpoint(parser=_JSON_TOOLS, **endpoint_options()):
+        response = _post(client, "messages", tools=[_tool(api="messages")])
+    assert response.status_code == 200, response.text
+    blocks = response.json()["content"]
+    assert "".join(b["text"] for b in blocks if b["type"] == "text") == expected
+    assert sum(b["type"] == "tool_use" for b in blocks) == int(completed_call)
+
+    with _endpoint(parser=_JSON_TOOLS, **endpoint_options()):
+        response = _post(client, "messages", stream=True, tools=[_tool(api="messages")])
+    assert _joined(_deltas(response, "messages"), "text") == expected
+    tool_blocks = [
+        item["content_block"]
+        for item in _data(response)
+        if item.get("type") == "content_block_start"
+        and item["content_block"]["type"] == "tool_use"
+    ]
+    assert len(tool_blocks) == int(completed_call)
 
 
 # HTTP audio endpoints

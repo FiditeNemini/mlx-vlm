@@ -31,6 +31,7 @@ from .responses_state import (
     finish_content_streams,
     make_response_stream_state,
     prompt_has_open_thinking,
+    strip_protocol_markers,
 )
 from .runtime import runtime
 from .schemas import AnthropicMessageResponse, AnthropicRequest, AnthropicUsage
@@ -1020,6 +1021,12 @@ async def anthropic_messages_endpoint(http_request: Request):
                         gen_args.thinking_start_token,
                         gen_args.thinking_end_token,
                         processor=processor,
+                    )
+                    content = strip_protocol_markers(
+                        content,
+                        tool_module,
+                        gen_args.thinking_start_token,
+                        gen_args.thinking_end_token,
                     )
 
             content, stop_sequence = _apply_stop_sequences(
