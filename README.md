@@ -60,6 +60,7 @@ Some models have detailed documentation with prompt formats, examples, and best 
 | Granite 4.0 Vision | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/granite4_vision/README.md) |
 | MiniCPM-V 4.6 | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/minicpmv4_6/README.md) |
 | GLiNER2.5 | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/gliner2_5/README.md) |
+| BERT | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/bert/README.md) |
 | LLaVA-OneVision | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/llava_onevision/README.md) |
 | K2-Horizon | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/k2_horizon/README.md) |
 | Z1T-0 | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/z1t/README.md) |
@@ -1308,7 +1309,7 @@ curl -X POST "http://localhost:8080/v1/embeddings" \
   }'
 ```
 
-Preload a default with `--embedding-model <repo-or-path>`. Supported architectures: BERT, XLM-RoBERTa, ModernBERT, Qwen3-Embedding, EmbeddingGemma (gemma3), LFM2, SigLIP (text), Qwen3-VL-Embedding, and Llama-Nemotron-VL, plus LLM2Vec bidirectional Llama. ColBERT-style multi-vector models (ColIdefics3, ColQwen2.5) are also available for late-interaction use.
+Preload a default with `--embedding-model <repo-or-path>`. Supported architectures: BERT, XLM-RoBERTa, ModernBERT, Qwen3-Embedding, EmbeddingGemma (gemma3), LFM2, SigLIP (text), Qwen3-VL-Embedding, and Llama-Nemotron-VL, plus LLM2Vec bidirectional Llama. ColBERT-style multi-vector models (ColIdefics3, ColQwen2.5, LFM2-ColBERT) are also available for late-interaction use.
 
 ##### Reranking
 
