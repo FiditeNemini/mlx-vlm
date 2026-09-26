@@ -579,8 +579,10 @@ async def anthropic_messages_endpoint(http_request: Request):
                     gen_args.thinking_start_token,
                     gen_args.thinking_end_token,
                 )
-                tc_start = tool_module.tool_call_start if tool_module else None
-                tc_end = tool_module.tool_call_end if tool_module else None
+                tc_start = (
+                    tool_module.tool_call_start if tool_module and tools else None
+                )
+                tc_end = tool_module.tool_call_end if tool_module and tools else None
                 tool_call_state = ToolCallStreamState(tc_start, tc_end)
                 message_started = False
 

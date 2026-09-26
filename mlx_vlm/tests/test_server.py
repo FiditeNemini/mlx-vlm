@@ -1916,6 +1916,23 @@ def test_anthropic_messages_streaming_emits_tool_use_events(client):
         assert fragment in response.text
 
 
+def test_anthropic_stream_without_tools_keeps_literal_call_markup(client):
+    text = 'Literal <tool_call>{"name":"get_weather"}</tool_call> text.'
+    with _endpoint(parser=_JSON_TOOLS, result=_result(text)):
+        ordinary = _post(client, "messages")
+    streamed = _stream_response(
+        client,
+        [_token(text, finish_reason="stop")],
+        "messages",
+        endpoint=dict(parser=_JSON_TOOLS),
+    )
+
+    assert ordinary.status_code == 200
+    expected = ordinary.json()["content"][0]["text"]
+    assert expected == text
+    assert _joined(_deltas(streamed, "messages"), "text") == expected
+
+
 ANTHROPIC_TOOLS = [_tool(name, "messages") for name in ("get_time", "get_weather")]
 
 
