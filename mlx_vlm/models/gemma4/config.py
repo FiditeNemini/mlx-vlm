@@ -5,23 +5,27 @@ from ..base import BaseModelConfig
 
 
 def global_attention_from_per_layer_config(
-    per_layer_config: Optional[Dict], layer_types: List[str]
+    per_layer_config: Optional[Dict],
+    layer_types: List[str],
+    head_dim: int,
+    num_key_value_heads: int,
 ) -> Tuple[Optional[int], Optional[int]]:
     """The full-attention layers' head size and KV heads from `per_layer_config`.
 
     transformers 5.15+ writes these as `per_layer_config` (`{layer index:
     {"head_dim": ..., "num_key_value_heads": ...}}` for each full-attention
     layer) instead of `global_head_dim` and `num_global_key_value_heads`.
-    Returns `(None, None)` when there is no `per_layer_config`. The models here
+    Missing layers and fields inherit the base `head_dim` and KV-head count.
+    Returns `(None, None)` when `per_layer_config` is absent. The models here
     take one head size and one KV-head count for all full-attention layers, so
-    entries that differ, or that override a sliding-attention layer, raise.
+    resolved shapes that differ, or overrides of sliding-attention layers, raise.
     """
-    if not per_layer_config:
+    if per_layer_config is None:
         return None, None
-    head_dims, kv_heads = set(), set()
+    layer_overrides = {}
     for index, overrides in per_layer_config.items():
         layer = int(index)
-        if layer >= len(layer_types) or layer_types[layer] != "full_attention":
+        if not 0 <= layer < len(layer_types) or layer_types[layer] != "full_attention":
             raise ValueError(
                 f"per_layer_config overrides layer {layer}, which is not a "
                 "full-attention layer; this is not supported"
@@ -29,21 +33,30 @@ def global_attention_from_per_layer_config(
         unknown = set(overrides) - {"head_dim", "num_key_value_heads"}
         if unknown:
             raise ValueError(f"per_layer_config has unsupported keys {sorted(unknown)}")
-        head_dims.add(overrides.get("head_dim"))
-        kv_heads.add(overrides.get("num_key_value_heads"))
+        layer_overrides[layer] = overrides
+    head_dims, kv_heads = set(), set()
+    for layer, layer_type in enumerate(layer_types):
+        if layer_type != "full_attention":
+            continue
+        overrides = layer_overrides.get(layer, {})
+        head_dims.add(overrides.get("head_dim", head_dim))
+        kv_heads.add(overrides.get("num_key_value_heads", num_key_value_heads))
     if len(head_dims) > 1 or len(kv_heads) > 1:
         raise ValueError(
             "per_layer_config gives full-attention layers different shapes; "
             "this is not supported"
         )
-    return head_dims.pop(), kv_heads.pop()
+    return next(iter(head_dims), None), next(iter(kv_heads), None)
 
 
 def apply_per_layer_config(config) -> None:
     """Set `global_head_dim` and `num_global_key_value_heads` from
     `config.per_layer_config`, if it has one."""
     head_dim, kv_heads = global_attention_from_per_layer_config(
-        config.per_layer_config, config.layer_types
+        config.per_layer_config,
+        config.layer_types,
+        config.head_dim,
+        config.num_key_value_heads,
     )
     if head_dim is not None:
         config.global_head_dim = head_dim
