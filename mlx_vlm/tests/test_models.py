@@ -6727,3 +6727,136 @@ def test_qwen3_5_attention_forwards_rope_parameters(omit_original_max):
         QWEN3_5_YARN_HF_ATTENTION_FACTOR, rel=1e-6
     )
     assert not rotary.fused_apply
+
+
+class TestGemma4PerLayerConfig:
+    """transformers 5.15+ saves Gemma 4's full-attention shapes as `per_layer_config`."""
+
+    @staticmethod
+    def _text(**extra):
+        params = {
+            "num_hidden_layers": 12,
+            "sliding_window_pattern": 6,
+            "num_key_value_heads": 16,
+            "head_dim": 256,
+            "attention_k_eq_v": True,
+        }
+        params.update(extra)
+        return params
+
+    def test_reads_full_attention_shapes(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+        from mlx_vlm.models.gemma4.language import Attention
+
+        per_layer = {"05": {"head_dim": 512, "num_key_value_heads": 4}}
+        per_layer["11"] = dict(per_layer["05"])
+        cfg = TextConfig.from_dict(self._text(per_layer_config=per_layer))
+        assert cfg.layer_types[5] == cfg.layer_types[11] == "full_attention"
+        assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (512, 4)
+        assert Attention(cfg, 5).n_kv_heads == 4
+
+    def test_text_and_unified_configs(self):
+        from mlx_vlm.models.gemma4_text.config import ModelConfig as TextOnlyConfig
+        from mlx_vlm.models.gemma4_unified.config import TextConfig as UnifiedConfig
+
+        per_layer = {"05": {"head_dim": 384, "num_key_value_heads": 2}}
+        for cls in (TextOnlyConfig, UnifiedConfig):
+            cfg = cls.from_dict(
+                self._text(num_hidden_layers=6, per_layer_config=per_layer)
+            )
+            assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (384, 2)
+
+    def test_old_keys_without_per_layer_config(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+
+        cfg = TextConfig.from_dict(
+            self._text(global_head_dim=384, num_global_key_value_heads=2)
+        )
+        assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (384, 2)
+
+    def test_head_dim_only_inherits_kv_heads(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+
+        cfg = TextConfig.from_dict(
+            self._text(
+                num_hidden_layers=6,
+                attention_k_eq_v=False,
+                per_layer_config={"05": {"head_dim": 512}},
+            )
+        )
+        assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (512, 16)
+
+    def test_rejects_shapes_it_cannot_represent(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+
+        differing = {
+            "05": {"head_dim": 512, "num_key_value_heads": 4},
+            "11": {"head_dim": 512, "num_key_value_heads": 2},
+        }
+        with pytest.raises(ValueError, match="different shapes"):
+            TextConfig.from_dict(self._text(per_layer_config=differing))
+        for overrides in ({"head_dim": 512}, {"num_key_value_heads": 4}):
+            with pytest.raises(ValueError, match="different shapes"):
+                TextConfig.from_dict(self._text(per_layer_config={"05": overrides}))
+        with pytest.raises(ValueError, match="not a full-attention layer"):
+            TextConfig.from_dict(self._text(per_layer_config={"00": {"head_dim": 512}}))
+
+    @pytest.mark.parametrize(
+        "per_layer, expected_kv_heads",
+        [({}, 4), ({"05": {"num_key_value_heads": 2}}, 2)],
+    )
+    def test_inherits_omitted_shapes(self, per_layer, expected_kv_heads):
+        from mlx_vlm.models.gemma4.config import TextConfig
+
+        cfg = TextConfig.from_dict(
+            self._text(
+                num_hidden_layers=6,
+                head_dim=64,
+                num_key_value_heads=4,
+                per_layer_config=per_layer,
+            )
+        )
+        assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (
+            64,
+            expected_kv_heads,
+        )
+
+    @pytest.mark.parametrize("model_type", ["gemma4", "gemma4_text", "gemma4_unified"])
+    @pytest.mark.parametrize("use_per_layer_config", [False, True])
+    def test_kv_heads_without_k_eq_v(self, model_type, use_per_layer_config):
+        config_module = importlib.import_module(f"mlx_vlm.models.{model_type}.config")
+        config_cls = (
+            config_module.ModelConfig
+            if model_type == "gemma4_text"
+            else config_module.TextConfig
+        )
+        language_type = "gemma4" if model_type == "gemma4_unified" else model_type
+        attention_cls = importlib.import_module(
+            f"mlx_vlm.models.{language_type}.language"
+        ).Attention
+        cfg = config_cls.from_dict(
+            self._text(
+                num_hidden_layers=6,
+                num_kv_shared_layers=0,
+                hidden_size=32,
+                num_attention_heads=4,
+                head_dim=8,
+                global_head_dim=16,
+                num_key_value_heads=4,
+                num_global_key_value_heads=2,
+                attention_k_eq_v=False,
+                per_layer_config=(
+                    {"05": {"head_dim": 16, "num_key_value_heads": 2}}
+                    if use_per_layer_config
+                    else None
+                ),
+            )
+        )
+        full = attention_cls(cfg, 5)
+        expected_kv_heads = 2 if use_per_layer_config else 4
+        assert not full.use_k_eq_v
+        assert full.n_kv_heads == expected_kv_heads
+        assert full.k_proj.weight.shape == (expected_kv_heads * 16, 32)
+        assert full.v_proj.weight.shape == full.k_proj.weight.shape
+        sliding = attention_cls(cfg, 0)
+        assert (sliding.head_dim, sliding.n_kv_heads) == (8, 4)
