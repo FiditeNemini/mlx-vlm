@@ -1,7 +1,54 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from ..base import BaseModelConfig
+
+
+def global_attention_from_per_layer_config(
+    per_layer_config: Optional[Dict], layer_types: List[str]
+) -> Tuple[Optional[int], Optional[int]]:
+    """The full-attention layers' head size and KV heads from `per_layer_config`.
+
+    transformers 5.15+ writes these as `per_layer_config` (`{layer index:
+    {"head_dim": ..., "num_key_value_heads": ...}}` for each full-attention
+    layer) instead of `global_head_dim` and `num_global_key_value_heads`.
+    Returns `(None, None)` when there is no `per_layer_config`. The models here
+    take one head size and one KV-head count for all full-attention layers, so
+    entries that differ, or that override a sliding-attention layer, raise.
+    """
+    if not per_layer_config:
+        return None, None
+    head_dims, kv_heads = set(), set()
+    for index, overrides in per_layer_config.items():
+        layer = int(index)
+        if layer >= len(layer_types) or layer_types[layer] != "full_attention":
+            raise ValueError(
+                f"per_layer_config overrides layer {layer}, which is not a "
+                "full-attention layer; this is not supported"
+            )
+        unknown = set(overrides) - {"head_dim", "num_key_value_heads"}
+        if unknown:
+            raise ValueError(f"per_layer_config has unsupported keys {sorted(unknown)}")
+        head_dims.add(overrides.get("head_dim"))
+        kv_heads.add(overrides.get("num_key_value_heads"))
+    if len(head_dims) > 1 or len(kv_heads) > 1:
+        raise ValueError(
+            "per_layer_config gives full-attention layers different shapes; "
+            "this is not supported"
+        )
+    return head_dims.pop(), kv_heads.pop()
+
+
+def apply_per_layer_config(config) -> None:
+    """Set `global_head_dim` and `num_global_key_value_heads` from
+    `config.per_layer_config`, if it has one."""
+    head_dim, kv_heads = global_attention_from_per_layer_config(
+        config.per_layer_config, config.layer_types
+    )
+    if head_dim is not None:
+        config.global_head_dim = head_dim
+    if kv_heads is not None:
+        config.num_global_key_value_heads = kv_heads
 
 
 @dataclass
@@ -96,6 +143,7 @@ class TextConfig(BaseModelConfig):
     moe_intermediate_size: Optional[int] = None
     layer_types: Optional[List[str]] = None
     tie_word_embeddings: bool = True
+    per_layer_config: Optional[Dict] = None
 
     def __post_init__(self):
         if self.rope_parameters is None:
@@ -118,6 +166,7 @@ class TextConfig(BaseModelConfig):
             self.layer_types = (pattern * (self.num_hidden_layers // len(pattern) + 1))[
                 : self.num_hidden_layers
             ]
+        apply_per_layer_config(self)
 
 
 @dataclass

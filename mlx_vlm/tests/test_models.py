@@ -6727,3 +6727,73 @@ def test_qwen3_5_attention_forwards_rope_parameters(omit_original_max):
         QWEN3_5_YARN_HF_ATTENTION_FACTOR, rel=1e-6
     )
     assert not rotary.fused_apply
+
+
+class TestGemma4PerLayerConfig:
+    """transformers 5.15+ saves Gemma 4's full-attention shapes as `per_layer_config`."""
+
+    @staticmethod
+    def _text(**extra):
+        params = {
+            "num_hidden_layers": 12,
+            "sliding_window_pattern": 6,
+            "num_key_value_heads": 16,
+            "head_dim": 256,
+            "attention_k_eq_v": True,
+        }
+        params.update(extra)
+        return params
+
+    def test_reads_full_attention_shapes(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+        from mlx_vlm.models.gemma4.language import Attention
+
+        per_layer = {"05": {"head_dim": 512, "num_key_value_heads": 4}}
+        per_layer["11"] = dict(per_layer["05"])
+        cfg = TextConfig.from_dict(self._text(per_layer_config=per_layer))
+        assert cfg.layer_types[5] == cfg.layer_types[11] == "full_attention"
+        assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (512, 4)
+        assert Attention(cfg, 5).n_kv_heads == 4
+
+    def test_text_and_unified_configs(self):
+        from mlx_vlm.models.gemma4_text.config import ModelConfig as TextOnlyConfig
+        from mlx_vlm.models.gemma4_unified.config import TextConfig as UnifiedConfig
+
+        per_layer = {"05": {"head_dim": 384, "num_key_value_heads": 2}}
+        for cls in (TextOnlyConfig, UnifiedConfig):
+            cfg = cls.from_dict(
+                self._text(num_hidden_layers=6, per_layer_config=per_layer)
+            )
+            assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (384, 2)
+
+    def test_old_keys_without_per_layer_config(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+
+        cfg = TextConfig.from_dict(
+            self._text(global_head_dim=384, num_global_key_value_heads=2)
+        )
+        assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (384, 2)
+
+    def test_head_dim_only_keeps_kv_heads_unset(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+
+        cfg = TextConfig.from_dict(
+            self._text(
+                num_hidden_layers=6,
+                attention_k_eq_v=False,
+                per_layer_config={"05": {"head_dim": 512}},
+            )
+        )
+        assert (cfg.global_head_dim, cfg.num_global_key_value_heads) == (512, None)
+
+    def test_rejects_shapes_it_cannot_represent(self):
+        from mlx_vlm.models.gemma4.config import TextConfig
+
+        differing = {
+            "05": {"head_dim": 512, "num_key_value_heads": 4},
+            "11": {"head_dim": 512, "num_key_value_heads": 2},
+        }
+        with pytest.raises(ValueError, match="different shapes"):
+            TextConfig.from_dict(self._text(per_layer_config=differing))
+        with pytest.raises(ValueError, match="not a full-attention layer"):
+            TextConfig.from_dict(self._text(per_layer_config={"00": {"head_dim": 512}}))
